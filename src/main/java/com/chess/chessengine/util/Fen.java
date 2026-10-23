@@ -35,7 +35,7 @@ public final class Fen {
     ) {
     }
     public static LoadedPosition LoadFen(String fen) {
-        String[] sections = fen.split(" ");
+        String[] sections = fen.trim().split("\\s+");
 
         int index  = 0;
         int[] squares = new int[64];
@@ -67,7 +67,7 @@ public final class Fen {
             }
         }
 
-        boolean whiteToMove = Objects.equals(sections[1], "w");
+        boolean whiteToMove = sections.length < 2 || Objects.equals(sections[1], "w");
 
         // castling rights
         String castlingString = new String(sections.length > 2 ? sections[2] : "KQkq");
@@ -104,11 +104,15 @@ public final class Fen {
         }
 
         int fiftyMoveCounter = 0;
-        int plyCount = 0;
+        int plyCount = whiteToMove ? 0 : 1;
 
-        if (sections.length > 4 && isInt(sections[4]) && isInt(sections[5])) {
+        if (sections.length > 4 && isInt(sections[4])) {
             fiftyMoveCounter = Integer.parseInt(sections[4]);
-            plyCount = Integer.parseInt(sections[5]);
+        }
+        if (sections.length > 5 && isInt(sections[5])) {
+            // FEN stores the full move number (starting at 1), not the ply count
+            int fullMoveNumber = Math.max(1, Integer.parseInt(sections[5]));
+            plyCount = (fullMoveNumber - 1) * 2 + (whiteToMove ? 0 : 1);
         }
 
         return new LoadedPosition(whiteToMove, squares, whiteCastleKingside, whiteCastleQueenside, blackCastleKingside, blackCastleQueenside, epFile, plyCount, fiftyMoveCounter);

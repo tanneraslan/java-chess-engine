@@ -10,8 +10,8 @@ public final class Piece {
     public static final int BISHOP = 4;
     public static final int ROOK = 5;
     public static final int QUEEN = 6;
-    public static final int BLACK_BINARY = 0;
-    public static final int WHITE_BINARY = 8;
+    public static final int WHITE_BINARY = 0;
+    public static final int BLACK_BINARY = 8;
 
     private static final int TYPE_MASK = 0b0111;
     private static final int COLOR_MASK = 0b1000;

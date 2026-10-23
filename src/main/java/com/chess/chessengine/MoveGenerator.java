@@ -2,10 +2,11 @@ package com.chess.chessengine;
 
 import com.chess.chessengine.util.*;
 
-import java.lang.reflect.Array;
 import java.util.ArrayList;
 
 public class MoveGenerator {
+    private final Board board;
+
     private int friendlyColor;
     private int opponentColor;
     private int friendlyKingSquare;
@@ -27,70 +28,78 @@ public class MoveGenerator {
 
     public ArrayList<Integer> CurrentMoves;
 
+    public MoveGenerator(Board board) {
+        this.board = board;
+    }
+
     private void GeneratePins() {
         int[] friendlyKingEdgeDistance = StaticMoveData.EDGE_DISTANCE[friendlyKingSquare];
         long[] edgeRays = StaticMoveData.EDGE_RAYS[friendlyKingSquare];
 
         int friendlyPieceInDirection;
-        boolean enPassantSquareInDirection;
+        boolean epPawnInDirection;
         boolean isDiagonal;
+        boolean isHorizontal;
+        long slidingMap;
         int offset;
 
         int targetSquare;
 
         for (int dir = 0; dir < 8; dir++) {
             isDiagonal = dir >= 4;
+            isHorizontal = dir == 2 || dir == 3;
+            slidingMap = isDiagonal ? diagonalSlidingMap : straightSlidingMap;
 
-            if (isDiagonal && (diagonalSlidingMap & edgeRays[dir]) == 0) {
-                continue;
-            } else if (!isDiagonal && (straightSlidingMap & edgeRays[dir]) == 0) {
+            if ((slidingMap & edgeRays[dir]) == 0) {
                 continue;
             }
 
             friendlyPieceInDirection = -1;
-            enPassantSquareInDirection = false;
+            epPawnInDirection = false;
             offset = StaticMoveData.DIRECTIONAL_OFFSETS[dir];
 
             for (int i = 0; i < friendlyKingEdgeDistance[dir]; i++) {
                 targetSquare = friendlyKingSquare + offset * (i + 1);
 
-                if (Bitboard.GetBit(Main.Board.FriendlyPieceMap, targetSquare) != 0) {
+                if (Bitboard.GetBit(board.FriendlyPieceMap, targetSquare) != 0) {
                     if (friendlyPieceInDirection == -1) {
                         friendlyPieceInDirection = targetSquare;
                     } else {
                         // If there's two friendly pieces in the way, there's no chance of a pin in this direction
                         break;
                     }
-                } else if (Bitboard.GetBit(Main.Board.OpponentPieceMap, targetSquare) != 0) {
-                    if ((isDiagonal && Bitboard.GetBit(diagonalSlidingMap, targetSquare) != 0) || (!isDiagonal && Bitboard.GetBit(straightSlidingMap, targetSquare) != 0)) {
-                        // Sliding pieces
-                        if (friendlyPieceInDirection != -1) {
-                            if (enPassantSquareInDirection && Piece.IsType(Main.Board.Square[friendlyPieceInDirection], Piece.PAWN)) {
-                                // Prevent en passant capture if pawn is pinned
+                } else if (Bitboard.GetBit(board.OpponentPieceMap, targetSquare) != 0) {
+                    if (Bitboard.GetBit(slidingMap, targetSquare) != 0) {
+                        if (epPawnInDirection) {
+                            // The pawn that can be captured en passant is still blocking this slider, so there is no
+                            // check or pin. But capturing it would open the line if nothing else would be left blocking:
+                            // on a rank the capturing pawn also leaves the line, on a diagonal it never stood on it.
+                            boolean onlyBlockedByCapturingPawn = isHorizontal
+                                    ? friendlyPieceInDirection != -1 && Piece.IsType(board.Square[friendlyPieceInDirection], Piece.PAWN)
+                                    : friendlyPieceInDirection == -1;
+
+                            if (onlyBlockedByCapturingPawn) {
                                 epSquare = -1;
-                            } else {
-                                // Update the pinned directions to be the direction and its opposite
-                                pinnedDirections[friendlyPieceInDirection] |= (1 << dir) | (1 << StaticMoveData.OPPOSITE_DIRECTIONS[dir]);
-                                pinnedPieces = Bitboard.SetBit(pinnedPieces, friendlyPieceInDirection);
                             }
+                        } else if (friendlyPieceInDirection != -1) {
+                            // Update the pinned directions to be the direction and its opposite
+                            pinnedDirections[friendlyPieceInDirection] = (1 << dir) | (1 << StaticMoveData.OPPOSITE_DIRECTIONS[dir]);
+                            pinnedPieces = Bitboard.SetBit(pinnedPieces, friendlyPieceInDirection);
                         } else {
                             // We must be in check if there's nothing blocking
-
                             inDoubleCheck = inCheck;
                             inCheck = true;
 
                             // If we are in double check, the king has to move so there's no chance of another piece blocking it
                             if (!inDoubleCheck) {
-                                for (int j = 0; j < (i + 1); j++) {
-                                    checkRay = Bitboard.SetBit(checkRay, friendlyKingSquare + offset * (j + 1));
-                                }
+                                checkRay |= edgeRays[dir] & ~StaticMoveData.EDGE_RAYS[targetSquare][dir];
                             }
-
-                            // No other sliding pieces in this direction can influence the attack
-                            break;
                         }
-                    } else if (!isDiagonal && targetSquare == epPawnSquare) {
-                        enPassantSquareInDirection = true;
+
+                        // No other sliding pieces in this direction can influence the king
+                        break;
+                    } else if (targetSquare == epPawnSquare && (isHorizontal || isDiagonal)) {
+                        epPawnInDirection = true;
                     } else {
                         // If an enemy piece is blocking the attack, any other enemy sliding pieces are blocked as well
                         break;
@@ -118,7 +127,7 @@ public class MoveGenerator {
 
             for (int i = 0; i < edgeDistances[dir]; i++) {
                 targetSquare = square + offset * (i + 1);
-                targetPiece = Main.Board.Square[targetSquare];
+                targetPiece = board.Square[targetSquare];
 
                 attackMap = Bitboard.SetBit(attackMap, targetSquare);
 
@@ -136,7 +145,7 @@ public class MoveGenerator {
 
         int square;
 
-        PieceList[] opponentPieces = Main.Board.Pieces[opponentColor];
+        PieceList[] opponentPieces = board.Pieces[opponentColor];
 
         PieceList opponentQueens = opponentPieces[Piece.QUEEN];
         for (int i = 0; i < opponentQueens.Count; i++) {
@@ -180,8 +189,6 @@ public class MoveGenerator {
             knightAttackMap |= map;
         }
 
-        long pawnAttackMap = 0;
-
         PieceList opponentPawns = opponentPieces[Piece.PAWN];
         long[] pawnBitboards = StaticMoveData.PAWN_BITBOARDS[opponentColor];
 
@@ -207,10 +214,10 @@ public class MoveGenerator {
             pawnAttackMap |= map;
         }
 
-        int opponentKingSquare = Main.Board.KingSquare[opponentColor];
+        int opponentKingSquare = board.KingSquare[opponentColor];
         long kingAttackMap = StaticMoveData.KING_BITBOARDS[opponentKingSquare];
 
-        Main.Board.OpponentAttackMap = slidingAttackMap | knightAttackMap | pawnAttackMap | kingAttackMap;
+        board.OpponentAttackMap = slidingAttackMap | knightAttackMap | pawnAttackMap | kingAttackMap;
     }
 
     boolean IsPinned(int square) {
@@ -218,7 +225,7 @@ public class MoveGenerator {
     }
 
     private void GenerateKingMoves() {
-        long moves = StaticMoveData.KING_BITBOARDS[friendlyKingSquare] & ~Main.Board.OpponentAttackMap & negatedFriendlyPieceMap;
+        long moves = StaticMoveData.KING_BITBOARDS[friendlyKingSquare] & ~board.OpponentAttackMap & negatedFriendlyPieceMap;
         long castlingBitboard;
 
         if (inDoubleCheck && moves == 0) {
@@ -232,25 +239,26 @@ public class MoveGenerator {
 
         // Castling
         if (!inCheck) {
-            int castlingRights = (Main.Board.GameState & (3 + friendlyColor * 9)) >>> friendlyColor * 2;
+            int castlingRights = (board.GameState & (3 + friendlyColor * 9)) >>> friendlyColor * 2;
+            int friendlyRook = Piece.Construct(friendlyColor, Piece.ROOK);
 
             // King side
-            if ((castlingRights & 1) != 0) {
+            if ((castlingRights & 1) != 0 && board.Square[friendlyKingSquare + 3] == friendlyRook) {
                 castlingBitboard = StaticMoveData.CASTLING_BITBOARDS[friendlyColor * 2];
 
-                if ((castlingBitboard & negatedOpponentPieceMap & negatedFriendlyPieceMap & ~Main.Board.OpponentAttackMap) == castlingBitboard) {
+                if ((castlingBitboard & negatedOpponentPieceMap & negatedFriendlyPieceMap & ~board.OpponentAttackMap) == castlingBitboard) {
                     CurrentMoves.add(Move.Construct(friendlyKingSquare, friendlyKingSquare + 2, Move.FLAG_CASTLING));
                 }
             }
 
             // Queen side
-            if ((castlingRights & 2) != 0) {
+            if ((castlingRights & 2) != 0 && board.Square[friendlyKingSquare - 4] == friendlyRook) {
                 castlingBitboard = StaticMoveData.CASTLING_BITBOARDS[friendlyColor * 2 + 1];
 
                 if ((castlingBitboard & negatedFriendlyPieceMap & negatedOpponentPieceMap) == castlingBitboard) {
                     castlingBitboard = Bitboard.ClearBit(castlingBitboard, friendlyKingSquare - 3);
 
-                    if ((castlingBitboard & ~Main.Board.OpponentAttackMap) == castlingBitboard) {
+                    if ((castlingBitboard & ~board.OpponentAttackMap) == castlingBitboard) {
                         CurrentMoves.add(Move.Construct(friendlyKingSquare, friendlyKingSquare - 2, Move.FLAG_CASTLING));
                     }
                 }
@@ -280,7 +288,7 @@ public class MoveGenerator {
             for (int i = 0; i < edgeDistances[dir]; i++) {
                 targetSquare = square + offset * (i + 1);
 
-                if (Bitboard.GetBit(Main.Board.FriendlyPieceMap, targetSquare) != 0) {
+                if (Bitboard.GetBit(board.FriendlyPieceMap, targetSquare) != 0) {
                     break;
                 }
 
@@ -290,7 +298,7 @@ public class MoveGenerator {
 
 
 
-                if (Bitboard.GetBit(Main.Board.OpponentPieceMap, targetSquare) != 0) {
+                if (Bitboard.GetBit(board.OpponentPieceMap, targetSquare) != 0) {
                     break;
                 }
             }
@@ -298,7 +306,7 @@ public class MoveGenerator {
     }
 
     private void GenerateKnightMoves() {
-        PieceList knights = Main.Board.Pieces[friendlyColor][Piece.KNIGHT];
+        PieceList knights = board.Pieces[friendlyColor][Piece.KNIGHT];
 
         int square;
 
@@ -338,18 +346,18 @@ public class MoveGenerator {
         int doublePawnRank = friendlyColor == Board.WHITE ? 4 : 3;
         int promotionRank = friendlyColor == Board.WHITE ? 1 : 6;
 
-        long epBitboard = Main.Board.OpponentPieceMap;
+        long epBitboard = board.OpponentPieceMap;
         long pawnCheckRay = checkRay;
 
         if (epSquare != -1) {
             epBitboard = Bitboard.SetBit(epBitboard, epSquare);
         }
 
-        if (inCheck && epCanResolveCheck) {
+        if (inCheck && epCanResolveCheck && epSquare != -1) {
             pawnCheckRay = Bitboard.SetBit(pawnCheckRay, epSquare);
         }
 
-        PieceList pawns = Main.Board.Pieces[friendlyColor][Piece.PAWN];
+        PieceList pawns = board.Pieces[friendlyColor][Piece.PAWN];
 
         int square;
         int targetSquare;
@@ -420,11 +428,11 @@ public class MoveGenerator {
     public ArrayList<Integer> GenerateMoves() {
         CurrentMoves = new ArrayList<>();
 
-        friendlyColor = Main.Board.ColorToMove;
-        opponentColor = (Main.Board.ColorToMove + 1) % 2;
+        friendlyColor = board.ColorToMove;
+        opponentColor = (board.ColorToMove + 1) % 2;
 
-        friendlyKingSquare = Main.Board.KingSquare[friendlyColor];
-        epSquare = Main.Board.GameState >>> 4 & 0b1111;
+        friendlyKingSquare = board.KingSquare[friendlyColor];
+        epSquare = board.GameState >>> 4 & 0b1111;
 
         if (epSquare == 0) {
             epSquare = -1;
@@ -432,7 +440,7 @@ public class MoveGenerator {
             epSquare = epSquare - 1 + (friendlyColor == Board.WHITE ? 2 : 5) * 8;
         }
 
-        pinnedDirections = new int[64];
+        // pinnedDirections doesn't need clearing, it's only read for squares flagged in pinnedPieces
         pinnedPieces = 0;
         diagonalSlidingMap = 0;
         straightSlidingMap = 0;
@@ -449,25 +457,25 @@ public class MoveGenerator {
 
         GenerateAttackMap();
 
-        negatedFriendlyPieceMap = ~Main.Board.FriendlyPieceMap;
-        negatedOpponentPieceMap = ~Main.Board.OpponentPieceMap;
+        negatedFriendlyPieceMap = ~board.FriendlyPieceMap;
+        negatedOpponentPieceMap = ~board.OpponentPieceMap;
 
         GeneratePins();
 
         GenerateKingMoves();
 
         if (!inDoubleCheck) {
-            PieceList queens = Main.Board.Pieces[friendlyColor][Piece.QUEEN];
+            PieceList queens = board.Pieces[friendlyColor][Piece.QUEEN];
             for (int i = 0; i < queens.Count; i++) {
                 GenerateSlidingMoves(queens.get(i), 0, 8);
             }
 
-            PieceList rooks = Main.Board.Pieces[friendlyColor][Piece.ROOK];
+            PieceList rooks = board.Pieces[friendlyColor][Piece.ROOK];
             for (int i = 0; i < rooks.Count; i++) {
                 GenerateSlidingMoves(rooks.get(i), 0, 4);
             }
 
-            PieceList bishops = Main.Board.Pieces[friendlyColor][Piece.BISHOP];
+            PieceList bishops = board.Pieces[friendlyColor][Piece.BISHOP];
             for (int i = 0; i < bishops.Count; i++) {
                 GenerateSlidingMoves(bishops.get(i), 4, 8);
             }

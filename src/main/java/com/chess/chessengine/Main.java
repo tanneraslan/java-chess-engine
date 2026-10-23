@@ -3,6 +3,7 @@ package com.chess.chessengine;
 import com.chess.chessengine.util.*;
 import javafx.animation.KeyFrame;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.image.Image;
 import javafx.scene.input.KeyCode;
@@ -11,13 +12,13 @@ import javafx.stage.Stage;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Objects;
 import java.util.Stack;
 
 import javafx.scene.*;
 import javafx.scene.paint.*;
 import javafx.scene.canvas.*;
 import javafx.util.Duration;
-import javafx.util.Pair;
 
 import javafx.animation.Timeline;
 
@@ -26,7 +27,9 @@ public class Main extends Application {
     private Scene scene;
     private Canvas canvas;
     private GraphicsContext renderer;
-    private final Image spriteSheet = new Image("C:\\Users\\tanne\\IdeaProjects\\ChessEngine\\src\\Pieces.png");
+    private final Image spriteSheet = new Image(Objects.requireNonNull(Main.class.getResource("Pieces.png")).toExternalForm());
+    private final double spriteSourceWidth = spriteSheet.getWidth() / 6;
+    private final double spriteSourceHeight = spriteSheet.getHeight() / 2;
 
     private int selectedSquare = -1;
     private long targetSquares = 0L;
@@ -41,6 +44,9 @@ public class Main extends Application {
     private final static int SPRITE_SIZE = 96;
     private final static int[] PIECE_IMAGE_ORDER = {0, 5, 3, 2, 4, 1};
     private final static int[] PROMOTION_PIECE_ORDER = {Piece.QUEEN, Piece.KNIGHT, Piece.ROOK, Piece.BISHOP};
+    private final static Font SQUARE_INDEX_FONT = Font.font("Book Antiqua", FontWeight.BOLD, SPRITE_SIZE * 0.2);
+    // Shows move generator internals (pins, piece maps, square indices) on the board
+    private final static boolean DEBUG_OVERLAY = false;
 
     public static Board Board;
     public static AI AI;
@@ -56,22 +62,35 @@ public class Main extends Application {
             return isEven ? Color.rgb(246,236,134) : Color.rgb(215,196,94);
         } else if (Board.MoveGenerator.inCheck && Bitboard.GetBit(Board.MoveGenerator.checkRay, index) != 0) {
             return isEven ? Color.rgb(247, 150, 90) : Color.rgb(204, 119, 22);
-        } else if (Board.MoveGenerator.IsPinned(index)) {
+        } else if (DEBUG_OVERLAY && Board.MoveGenerator.IsPinned(index)) {
             return isEven ?  Color.rgb(210, 5, 118) : Color.rgb(150, 20, 107);
         } else {
-            if (Bitboard.GetBit(Board.FriendlyPieceMap, index) != 0) {
+            if (DEBUG_OVERLAY && Bitboard.GetBit(Board.FriendlyPieceMap, index) != 0) {
                 return isEven ? Color.rgb(50,150,230) : Color.rgb(50,120,230);
             }
-            if (Bitboard.GetBit(Board.OpponentPieceMap, index) != 0) {
+            if (DEBUG_OVERLAY && Bitboard.GetBit(Board.OpponentPieceMap, index) != 0) {
                 return isEven ? Color.rgb(85,230,120) : Color.rgb(50,200,25);
             }
             return isEven ? Color.rgb(240, 217, 181) : Color.rgb(181, 136, 99);
         }
     }
 
-    private Pair<Integer, Integer> getPieceSpriteOffset(int piece) {
-        return new Pair<>(PIECE_IMAGE_ORDER[Piece.PieceType(piece) - 1] * 334,
-        Piece.Color(piece) * 334);
+    private void drawPiece(int piece, double x, double y) {
+        double sourceX = PIECE_IMAGE_ORDER[Piece.PieceType(piece) - 1] * spriteSourceWidth;
+        double sourceY = Piece.Color(piece) * spriteSourceHeight;
+        renderer.drawImage(spriteSheet, sourceX, sourceY, spriteSourceWidth, spriteSourceHeight, x, y, SPRITE_SIZE, SPRITE_SIZE);
+    }
+
+    static void reportGameOver() {
+        if (!currentMoves.isEmpty()) {
+            return;
+        }
+
+        if (Board.MoveGenerator.inCheck) {
+            System.out.println("Checkmate! " + (Board.ColorToMove == Board.WHITE ? "Black" : "White") + " wins");
+        } else {
+            System.out.println("Stalemate!");
+        }
     }
 
     private void makePlayerMove(int move) {
@@ -79,17 +98,13 @@ public class Main extends Application {
         Board.MakeMove(move);
         mostRecentMove = move;
         currentMoves = Board.MoveGenerator.GenerateMoves();
+        reportGameOver();
 
         if (AI.Enabled) {
             AI.run();
-            //new Thread(AI).start();
         }
     }
     private void gameLoop() {
-        if (AI.InSearch) {
-            return;
-        }
-
         renderer.clearRect(0, 0, canvas.getWidth(), canvas.getHeight());
 
         for (int x = 0; x < 8; x++) {
@@ -98,19 +113,20 @@ public class Main extends Application {
                 int piece = Board.Square[index];
 
                 Color squareColor = getSquareColor(index, x, y);
-                Color alternativeColor = getSquareColor(index,x + 1, y);
+                Color alternativeColor = DEBUG_OVERLAY ? getSquareColor(index, x + 1, y) : null;
 
                 renderer.setFill(squareColor);
                 renderer.fillRect(x * SPRITE_SIZE, y * SPRITE_SIZE, SPRITE_SIZE, SPRITE_SIZE);
 
-                renderer.setFill(alternativeColor);
-                renderer.setTextAlign(TextAlignment.LEFT);
-                renderer.setFont(Font.font("Book Antiqua", FontWeight.BOLD, SPRITE_SIZE * 0.2));
-                renderer.fillText(String.valueOf(index), x * SPRITE_SIZE, (y + 1) * SPRITE_SIZE);
+                if (DEBUG_OVERLAY) {
+                    renderer.setFill(alternativeColor);
+                    renderer.setTextAlign(TextAlignment.LEFT);
+                    renderer.setFont(SQUARE_INDEX_FONT);
+                    renderer.fillText(String.valueOf(index), x * SPRITE_SIZE, (y + 1) * SPRITE_SIZE);
+                }
 
                 if (piece != 0 && index != selectedSquare) {
-                    Pair<Integer, Integer> imageOffset = getPieceSpriteOffset(piece);
-                    renderer.drawImage(spriteSheet, imageOffset.getKey(), imageOffset.getValue(), 334, 334, x * SPRITE_SIZE, y * SPRITE_SIZE, SPRITE_SIZE, SPRITE_SIZE);
+                    drawPiece(piece, x * SPRITE_SIZE, y * SPRITE_SIZE);
                 }
             }
         }
@@ -129,14 +145,10 @@ public class Main extends Application {
                 renderer.setFill(Color.WHITE);
                 renderer.fillRect(xPosition, yPosition, SPRITE_SIZE, SPRITE_SIZE);
 
-                int piece = Piece.Construct(Board.ColorToMove, PROMOTION_PIECE_ORDER[i]);
-                Pair<Integer, Integer> imageOffset = getPieceSpriteOffset(piece);
-                renderer.drawImage(spriteSheet, imageOffset.getKey(), imageOffset.getValue(), 334, 334, xPosition, yPosition, SPRITE_SIZE, SPRITE_SIZE);
+                drawPiece(Piece.Construct(Board.ColorToMove, PROMOTION_PIECE_ORDER[i]), xPosition, yPosition);
             }
         } else if (selectedSquare != -1) {
-            int piece = Board.Square[selectedSquare];
-            Pair<Integer, Integer> imageOffset = getPieceSpriteOffset(piece);
-            renderer.drawImage(spriteSheet, imageOffset.getKey(), imageOffset.getValue(), 334, 334, mouseX - (double) (SPRITE_SIZE / 2), mouseY - (double) (SPRITE_SIZE / 2), SPRITE_SIZE, SPRITE_SIZE);
+            drawPiece(Board.Square[selectedSquare], mouseX - (double) (SPRITE_SIZE / 2), mouseY - (double) (SPRITE_SIZE / 2));
         }
     }
 
@@ -146,6 +158,7 @@ public class Main extends Application {
         if (PerftTest.enabled) {
             Board = new Board();
             PerftTest.start();
+            Platform.exit();
         } else {
 
             root = new Group();
@@ -177,7 +190,7 @@ public class Main extends Application {
                 mouseX = mouseEvent.getX();
                 mouseY = mouseEvent.getY();
 
-                if (AI.Enabled && Board.ColorToMove != AI.PlayerColor) {
+                if (AI.InSearch || (AI.Enabled && Board.ColorToMove != AI.PlayerColor)) {
                     return;
                 }
 
@@ -259,19 +272,26 @@ public class Main extends Application {
                 }
             });
             scene.setOnKeyPressed(keyEvent -> {
-                if (keyEvent.getCode() == KeyCode.valueOf("SPACE") && !moveHistory.isEmpty()) {
+                if (keyEvent.getCode() == KeyCode.SPACE && !moveHistory.isEmpty() && !AI.InSearch) {
                     selectedSquare = -1;
                     promotingSquare = -1;
                     targetSquares = 0;
 
-                    Board.UnmakeMove(moveHistory.peek());
+                    // Against the AI, also take back the AI's reply so it's the player's turn again
+                    do {
+                        Board.UnmakeMove(moveHistory.pop());
+                    } while (AI.Enabled && Board.ColorToMove != AI.PlayerColor && !moveHistory.isEmpty());
+
                     currentMoves = Board.MoveGenerator.GenerateMoves();
-                    moveHistory.pop();
 
                     if (moveHistory.size() > 0) {
                         mostRecentMove = moveHistory.peek();
                     } else {
                         mostRecentMove = -1;
+                    }
+
+                    if (AI.Enabled && AI.AIColor == Board.ColorToMove) {
+                        AI.run();
                     }
                 }
             });

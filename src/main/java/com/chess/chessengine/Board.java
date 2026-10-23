@@ -1,13 +1,8 @@
 package com.chess.chessengine;
 
 import com.chess.chessengine.util.*;
-import com.chess.chessengine.PieceList;
-import javafx.geometry.HorizontalDirection;
-import javafx.scene.paint.Color;
 
-import java.lang.reflect.Array;
-import java.util.*;
-import java.util.function.LongBinaryOperator;
+import java.util.Arrays;
 
 public class Board {
 
@@ -18,6 +13,8 @@ public class Board {
     private static final int EPFILE_MASK       = 0b00000000000011110000;
     private static final int FIFTY_MOVE_MASK   = 0b00000111111100000000;
     private static final int LAST_CAPTURE_MASK = 0b11111000000000000000;
+    // The fifty move counter only has 7 bits in GameState; anything larger would spill into the capture bits
+    private static final int MAX_FIFTY_MOVE_COUNTER = 127;
 
     public int[] Square;
     public int[] KingSquare;
@@ -29,7 +26,8 @@ public class Board {
     public int ColorToMove;
     public int PlyCount;
     public int GameState;
-    public Stack<Integer> GameStateHistory;
+    private int[] gameStateHistory;
+    private int gameStateHistoryCount;
     public MoveGenerator MoveGenerator;
 
     private int nextCastlingRights;
@@ -44,8 +42,9 @@ public class Board {
         OpponentPieceMap = 0L;
         GameState = 0;
         PlyCount = 0;
-        GameStateHistory = new Stack<>();
-        MoveGenerator = new MoveGenerator();
+        gameStateHistory = new int[256];
+        gameStateHistoryCount = 0;
+        MoveGenerator = new MoveGenerator(this);
 
         ColorToMove = position.whiteToMove() ? WHITE : BLACK;
         PlyCount = position.plyCount();
@@ -112,11 +111,11 @@ public class Board {
             castling |= 0b1000;
         }
 
-        GameState = castling | position.enPassantFile() << 4 | position.fiftyMoveCounter() << 8;
+        int fiftyMoveCounter = Math.min(position.fiftyMoveCounter(), MAX_FIFTY_MOVE_COUNTER);
+        GameState = castling | position.enPassantFile() << 4 | fiftyMoveCounter << 8;
     }
 
     private void RemovePiece(int square, int piece) {
-        //System.out.println("REMOVING: " + square + " | " + Piece.Name(piece));
         Square[square] = 0;
 
         if (!Piece.IsType(piece, Piece.KING)) {
@@ -130,19 +129,13 @@ public class Board {
             OpponentPieceMap = Bitboard.ClearBit(OpponentPieceMap, square);
         }
 
-        // Update castling rights if a rook is removed
+        // Update castling rights if a rook leaves (or is captured on) its starting corner
         if (Piece.IsType(piece, Piece.ROOK)) {
-            int pieceColor = Piece.Color(piece);
-            int castlingRights = (nextCastlingRights & (3 + pieceColor * 9)) >>> pieceColor * 2;
-
-            if (castlingRights != 0) {
-                int file = square % 8;
-
-                if (file == 7 && (castlingRights & 1) != 0) {
-                    nextCastlingRights &= ~(1 << (pieceColor * 2));
-                } else if (file == 0 && (castlingRights & 2) != 0) {
-                    nextCastlingRights &= ~(1 << (pieceColor * 2 + 1));
-                }
+            switch (square) {
+                case 63 -> nextCastlingRights &= ~0b0001; // h1
+                case 56 -> nextCastlingRights &= ~0b0010; // a1
+                case 7  -> nextCastlingRights &= ~0b0100; // h8
+                case 0  -> nextCastlingRights &= ~0b1000; // a8
             }
         } else if (Piece.IsType(piece, Piece.KING)) {
             // Remove all castling rights if the king has been moved
@@ -150,7 +143,6 @@ public class Board {
         }
     }
     private void AddPiece(int square, int piece) {
-        //System.out.println("ADDING: " + square + " | " + Piece.Name(piece));
         Square[square] = piece;
 
         if (Piece.IsType(piece, Piece.KING)) {
@@ -186,13 +178,13 @@ public class Board {
         nextFiftyMoveCounter = 0;
     }
 
-    private static String BoardStringOutput(Board Board) {
+    public static String BoardStringOutput(Board board) {
         StringBuilder s = new StringBuilder();
 
 
         for (int i = 0; i < 64; i++) {
             s.append("|");
-            switch (Board.Square[i]) {
+            switch (board.Square[i]) {
                 case Piece.WHITE_BINARY | Piece.KING -> s.append("♔");
                 case Piece.WHITE_BINARY | Piece.QUEEN -> s.append("♕");
                 case Piece.WHITE_BINARY | Piece.ROOK -> s.append("♖");
@@ -229,23 +221,18 @@ public class Board {
 
         nextCastlingRights = GameState & CASTLING_MASK;
         nextEpFile = 0;
-        nextFiftyMoveCounter = GameState & FIFTY_MOVE_MASK >>> 8 + 1;
-
-        //System.out.println("~~~~~~~~~~~~~~MAKE MOVE~~~~~~~~~~~~~~~");
+        nextFiftyMoveCounter = Math.min(((GameState & FIFTY_MOVE_MASK) >>> 8) + 1, MAX_FIFTY_MOVE_COUNTER);
 
         if (flag == Move.FLAG_DOUBLE_PAWN) {
-            //System.out.println("DOUBLE PAWN");
             nextEpFile = currentSquare % 8 + 1;
             // Since a double pawn move can't capture anything, we can safety just move piece here
             MovePiece(currentSquare, targetSquare, currentPiece);
         } else if (flag == Move.FLAG_EN_PASSANT) {
-            //System.out.println("EN PASSANT");
             int targetPawnSquare = targetSquare - 8 * (2 * ColorToMove - 1);
             // Handle en passant movement within here
             RemovePiece(targetPawnSquare, Piece.Construct(opponentColor, Piece.PAWN));
             MovePiece(currentSquare, targetSquare, currentPiece);
         } else if (flag == Move.FLAG_CASTLING) {
-            //System.out.println("CASTLING");
             int rookSquare;
             int newRookSquare;
 
@@ -264,7 +251,6 @@ public class Board {
             // Move the king
             MovePiece(currentSquare, targetSquare, currentPiece);
         } else if (flag >= 4) {
-            //System.out.println("PROMOTION");
             // Check if a piece is on the square we're promoting to, and capture it if it is
             if (!Piece.IsType(targetPiece, Piece.NONE)) {
                 CapturePiece(currentSquare, targetSquare, currentPiece, targetPiece);
@@ -275,7 +261,6 @@ public class Board {
             // Replace our piece with our newly promoted one
             ReplacePiece(targetSquare, currentPiece, Piece.Construct(ColorToMove, Move.GetFlag(move) - 1));
         } else {
-            //System.out.println("REGULAR");
             if (Piece.IsType(targetPiece, Piece.NONE)) {
                 MovePiece(currentSquare, targetSquare, currentPiece);
             } else {
@@ -283,7 +268,10 @@ public class Board {
             }
         }
 
-        GameStateHistory.push(GameState);
+        if (gameStateHistoryCount == gameStateHistory.length) {
+            gameStateHistory = Arrays.copyOf(gameStateHistory, gameStateHistory.length * 2);
+        }
+        gameStateHistory[gameStateHistoryCount++] = GameState;
         GameState = (nextCastlingRights) | (nextEpFile << 4) | (nextFiftyMoveCounter << 8) | (targetPiece << 15);
         PlyCount += 1;
         ColorToMove = opponentColor;
@@ -293,19 +281,11 @@ public class Board {
         FriendlyPieceMap = temp;
 
 
-        /*for (int color = 0; color < 2; color++) {
-            System.out.println(color == 0 ? "WHITE:" : "BLACK:");
-            for (int pieceType = 2; pieceType < 7; pieceType++) {
-                System.out.println(Piece.Name(Piece.Construct(color * 8, pieceType)) + ": " + Pieces[color][pieceType].Count);
-            }
-        }*/
-
     }
 
     public void UnmakeMove(int move) {
         int previousGameState = GameState;
-        GameState = GameStateHistory.peek();
-        GameStateHistory.pop();
+        GameState = gameStateHistory[--gameStateHistoryCount];
         PlyCount--;
         ColorToMove = (ColorToMove + 1) % 2;
 
@@ -320,17 +300,13 @@ public class Board {
         int opponentColor = (ColorToMove + 1) % 2;
         int lastCapture = (previousGameState & LAST_CAPTURE_MASK) >>> 15;
 
-        //System.out.println("~~~~~~~~~~~~~~UNMAKE MOVE~~~~~~~~~~~~~~~");
-
         if (flag == Move.FLAG_EN_PASSANT) {
-            //System.out.println("EN PASSANT");
             int targetPawnSquare = currentSquare - 8 * (2 * ColorToMove - 1);
             // Move the en passant pawn back to its original square
             MovePiece(currentSquare, previousSquare, currentPiece);
             // Add the captured pawn back
             AddPiece(targetPawnSquare, Piece.Construct(opponentColor, Piece.PAWN));
         } else if (flag == Move.FLAG_CASTLING) {
-            //System.out.println("CASTLING");
             int rookSquare;
             int previousRookSquare;
 
@@ -350,7 +326,6 @@ public class Board {
             // Move the king back
             MovePiece(currentSquare, previousSquare, currentPiece);
         } else if (flag >= 4) {
-            //System.out.println("PROMOTION");
             // Move the promoted pawn back to its original square
             MovePiece(currentSquare, previousSquare, currentPiece);
             // Replace the promoted piece with a regular pawn
@@ -360,7 +335,6 @@ public class Board {
                 AddPiece(currentSquare, lastCapture);
             }
         } else {
-            //System.out.println("NORMAL");
             // Move the piece back to its original square
             MovePiece(currentSquare, previousSquare, currentPiece);
 
@@ -369,76 +343,6 @@ public class Board {
                 AddPiece(currentSquare, lastCapture);
             }
         }
-
-        StringBuilder s = new StringBuilder("Error occured at depth " + 3 + ".\nBoard:\n" + BoardStringOutput(Main.Board) + "\n" + (Main.Board.ColorToMove == Board.WHITE ? "White" : "Black") + " to move\nMoves:\n");
-
-        for (int previousMove : Main.moveHistory) {
-
-
-            s.append(Piece.Name(previousMove >>> 16) + " " + Move.GetName(previousMove)).append("\n");
-        }
-        /*for (int color = 0; color < 2; color++) {
-            System.out.println(color == 0   ? "WHITE:" : "BLACK:");
-            for (int pieceType = 2; pieceType < 7; pieceType++) {
-                System.out.println(Piece.Name(Piece.Construct(color * 8, pieceType)) + ": " + Pieces[color][pieceType].Count);
-            }
-        }*/
-
-        /*if (flag != 0) {
-            if (flag >= 4) {
-                Pieces[opponentColor][Piece.PieceType(currentPiece)].RemovePiece(currentSquare);
-                currentPiece = Piece.Construct(opponentColor, Piece.PAWN);
-            } else if (flag == Move.FLAG_EN_PASSANT) {
-                int forwardDir = opponentColor == WHITE ? 1 : -1;
-                int targetPawnSquare = currentSquare + 8 * forwardDir;
-
-                Pieces[ColorToMove][Piece.PAWN].AddPiece(targetPawnSquare);
-                FriendlyPieceMap = Bitboard.SetBit(FriendlyPieceMap, targetPawnSquare);
-                Square[targetPawnSquare] = Piece.Construct(ColorToMove, Piece.PAWN);
-            } else if (flag == Move.FLAG_CASTLING) {
-                int rookSquare;
-                int originalRookSquare;
-
-                if (currentSquare > previousSquare) { // Kingside
-                    originalRookSquare = previousSquare + 3;
-                    rookSquare = currentSquare - 1;
-                } else {
-                    originalRookSquare = previousSquare - 4;
-                    rookSquare = currentSquare + 1;
-                }
-
-                Pieces[opponentColor][Piece.ROOK].MovePiece(rookSquare, originalRookSquare);
-                Square[originalRookSquare] = Piece.Construct(opponentColor, Piece.ROOK);
-                Square[rookSquare] = 0;
-
-                OpponentPieceMap = Bitboard.SetBit(Bitboard.ClearBit(OpponentPieceMap, rookSquare), originalRookSquare);
-            }
-        }
-
-        Square[currentSquare] = 0;
-        Square[previousSquare] = currentPiece;
-
-        OpponentPieceMap = Bitboard.SetBit(Bitboard.ClearBit(OpponentPieceMap, currentSquare), previousSquare);
-
-        if (Piece.IsType(currentPiece, Piece.KING)) {
-            KingSquare[Piece.Color(currentPiece)] = previousSquare;
-        } else {
-            PieceList pieceList = Pieces[Piece.Color(currentPiece)][Piece.PieceType(currentPiece)];
-
-            if (flag < 4) {
-                pieceList.MovePiece(currentSquare, previousSquare);
-            } else {
-                pieceList.AddPiece(previousSquare);
-            }
-        }
-
-        if (lastCapture != 0 && flag != Move.FLAG_EN_PASSANT) {
-            Pieces[Piece.Color(lastCapture)][Piece.PieceType(lastCapture)].AddPiece(currentSquare);
-            Square[currentSquare] = lastCapture;
-
-            FriendlyPieceMap = Bitboard.SetBit(FriendlyPieceMap, currentSquare);
-        }
-        */
     }
 
     public Fen.LoadedPosition GenerateLoadedPosition() {
@@ -452,8 +356,8 @@ public class Board {
         boolean blackCastleKingside     = (castlingRights & 0b0100) != 0;
         boolean blackCastleQueenside    = (castlingRights & 0b1000) != 0;
 
-        int epFile = GameState & EPFILE_MASK >>> 4;
-        int fiftyMoveCounter = GameState & FIFTY_MOVE_MASK >>> 8;
+        int epFile = (GameState & EPFILE_MASK) >>> 4;
+        int fiftyMoveCounter = (GameState & FIFTY_MOVE_MASK) >>> 8;
 
         return new Fen.LoadedPosition(whiteToMove, squares, whiteCastleKingside, whiteCastleQueenside, blackCastleKingside, blackCastleQueenside, epFile, PlyCount, fiftyMoveCounter);
     }
