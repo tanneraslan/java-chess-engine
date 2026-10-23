@@ -4,6 +4,7 @@ import com.chess.chessengine.util.Bitboard;
 import com.chess.chessengine.util.Move;
 import com.chess.chessengine.util.Piece;
 import com.chess.chessengine.util.StaticMoveData;
+import javafx.application.Platform;
 import javafx.util.Pair;
 
 import java.util.*;
@@ -22,7 +23,9 @@ public class AI { //extends Thread {
             500, // Rook
             900  // Queen
     };
-    public boolean InSearch = false;
+    public volatile boolean InSearch = false;
+    private static final int SEARCH_DEPTH = 4;
+    private Board board;
     private static final int LOWEST_EVAL = Integer.MIN_VALUE + 1;
     private static final int HIGHEST_EVAL = Integer.MAX_VALUE - 1;
     private static final double ENDGAME_MATERIAL_MULTIPLIER = 1.0 / (PIECE_VALUES[Piece.ROOK] * 2 + PIECE_VALUES[Piece.BISHOP] + PIECE_VALUES[Piece.KNIGHT]);
@@ -33,17 +36,17 @@ public class AI { //extends Thread {
     }
     public int estimateMoveValue(int move) {
         int currentSquare = Move.GetCurrentSquare(move);
-        int currentPiece = Main.Board.Square[currentSquare];
+        int currentPiece = board.Square[currentSquare];
         int pieceType = Piece.PieceType(currentPiece);
         int targetSquare = Move.GetTargetSquare(move);
-        int targetPiece = Main.Board.Square[targetSquare];
+        int targetPiece = board.Square[targetSquare];
         int flag = Move.GetFlag(move);
         int value = 0;
 
         if (targetPiece != 0) {
             int earnedMaterial = PIECE_VALUES[Piece.PieceType(targetPiece)] - PIECE_VALUES[Piece.PieceType(currentPiece)];
 
-            if (Bitboard.GetBit(Main.Board.OpponentAttackMap, targetSquare) == 0L) {
+            if (Bitboard.GetBit(board.OpponentAttackMap, targetSquare) == 0L) {
                 value += earnedMaterial * 10;
             } else {
                 value += earnedMaterial * 5;
@@ -52,7 +55,7 @@ public class AI { //extends Thread {
 
         if (pieceType == Piece.PAWN) {
             if (flag >= 4) {
-                if (Bitboard.GetBit(Main.Board.OpponentAttackMap, targetSquare) == 0L) {
+                if (Bitboard.GetBit(board.OpponentAttackMap, targetSquare) == 0L) {
                     value += PIECE_VALUES[flag - 1] * 4;
                 } else {
                     value += PIECE_VALUES[flag - 1];
@@ -60,12 +63,12 @@ public class AI { //extends Thread {
             }
         } else if (pieceType == Piece.KING) {
         } else {
-            int[] weightMap = StaticMoveData.WEIGHT_MAPS[pieceType];
-            value += (readWeightMap(weightMap, currentSquare, Main.Board.ColorToMove) - readWeightMap(weightMap, targetSquare, Main.Board.ColorToMove));
+            int[] weightMap = StaticMoveData.WEIGHT_MAPS[pieceType - 1];
+            value += (readWeightMap(weightMap, targetSquare, board.ColorToMove) - readWeightMap(weightMap, currentSquare, board.ColorToMove));
 
-            if (Bitboard.GetBit(Main.Board.MoveGenerator.pawnAttackMap, targetSquare) != 0) {
+            if (Bitboard.GetBit(board.MoveGenerator.pawnAttackMap, targetSquare) != 0) {
                 value -= 350;
-            } else if (Bitboard.GetBit(Main.Board.OpponentAttackMap, targetSquare) != 0) {
+            } else if (Bitboard.GetBit(board.OpponentAttackMap, targetSquare) != 0) {
                 value -= 150;
             }
         }
@@ -132,8 +135,9 @@ public class AI { //extends Thread {
         return new Pair<>(moves, moveValues);
     }
     private int readWeightMap(int[] table, int square, int color) {
-        if (color == Board.WHITE) {
-            square = square - (square / 8) * 16 + 56;
+        // Tables are laid out from white's point of view with a8 first, matching the board's square indices
+        if (color == Board.BLACK) {
+            square ^= 56;
         }
 
         return table[square];
@@ -144,7 +148,7 @@ public class AI { //extends Thread {
         int[] table = StaticMoveData.WEIGHT_MAPS[pieceIndex - 1];
 
         if (pieceIndex == Piece.KING) {
-            int kingSquare = Main.Board.KingSquare[color];
+            int kingSquare = board.KingSquare[color];
 
             bonus = readWeightMap(table, kingSquare, color);
 
@@ -153,7 +157,7 @@ public class AI { //extends Thread {
                 bonus = intLerp(bonus, readWeightMap(endgameTable, kingSquare, color), endgameWeight);
             }
         } else if (pieceIndex == Piece.PAWN) {
-            PieceList pawnList = Main.Board.Pieces[color][Piece.PAWN];
+            PieceList pawnList = board.Pieces[color][Piece.PAWN];
             int[] endgameTable = StaticMoveData.WEIGHT_MAPS[7];
             boolean isEndgame = (endgameWeight > 0.0);
 
@@ -171,7 +175,7 @@ public class AI { //extends Thread {
                 bonus += pawnBonus;
             }
         } else {
-            PieceList pieceList = Main.Board.Pieces[color][Piece.PAWN];
+            PieceList pieceList = board.Pieces[color][pieceIndex];
 
             for (int i = 0; i < pieceList.Count; i++) {
                 bonus += readWeightMap(table, pieceList.get(i), color);
@@ -181,13 +185,13 @@ public class AI { //extends Thread {
         return bonus;
     }
     private double calculateEndgameWeight(int color, int totalMaterial) {
-        totalMaterial -= Main.Board.Pieces[color][Piece.PAWN].Count * PIECE_VALUES[Piece.PAWN];
+        totalMaterial -= board.Pieces[color][Piece.PAWN].Count * PIECE_VALUES[Piece.PAWN];
         return 1.0 - Math.min(1.0, totalMaterial * ENDGAME_MATERIAL_MULTIPLIER);
     }
     private int calculateMopUp(int friendlyColor, int opponentColor, int friendlyMaterial, int opponentMaterial, double enemyEndgameWeight) {
         if (friendlyMaterial > (opponentMaterial + PIECE_VALUES[Piece.PAWN] * 2) && enemyEndgameWeight > 0.0) {
-            int friendlyKingSquare = Main.Board.KingSquare[friendlyColor];
-            int opponentKingSquare = Main.Board.KingSquare[opponentColor];
+            int friendlyKingSquare = board.KingSquare[friendlyColor];
+            int opponentKingSquare = board.KingSquare[opponentColor];
 
             // PosEval = 4.7 * CMD + 1.6 * (14 - MD)
             return (int) ((4.7 * StaticMoveData.CENTRAL_MANHATTAN_DISTANCE[opponentKingSquare] + 1.5 * (14 - StaticMoveData.MANHATTAN_DISTANCE[friendlyKingSquare][opponentKingSquare])) * enemyEndgameWeight * 25);
@@ -195,22 +199,13 @@ public class AI { //extends Thread {
         return 0;
     }
     private int evaluatePosition() {
-        int friendlyColor = Main.Board.ColorToMove;
+        int friendlyColor = board.ColorToMove;
         int opponentColor = (friendlyColor + 1) % 2;
-
-        ArrayList<Integer> moves = Main.Board.MoveGenerator.CurrentMoves;
-
-        if (moves.size() == 0) {
-            if (Main.Board.MoveGenerator.inCheck) {
-                return LOWEST_EVAL;
-            }
-            return 0;
-        }
 
         int eval = 0;
 
-        PieceList[] friendlyPieces = Main.Board.Pieces[friendlyColor];
-        PieceList[] opponentPieces = Main.Board.Pieces[opponentColor];
+        PieceList[] friendlyPieces = board.Pieces[friendlyColor];
+        PieceList[] opponentPieces = board.Pieces[opponentColor];
 
         int friendlyMaterial = 0;
         int opponentMaterial = 0;
@@ -242,6 +237,18 @@ public class AI { //extends Thread {
     }
 
     private int quiescence(int alpha, int beta, int minValue) {
+        // Moves must be generated before evaluating: checkmate/stalemate detection and the move ordering
+        // heuristics both rely on the move generator's state matching the current position
+        board.MoveGenerator.GenerateMoves();
+
+        int numOfMoves = board.MoveGenerator.CurrentMoves.size();
+        if (numOfMoves == 0) {
+            if (board.MoveGenerator.inCheck) {
+                return LOWEST_EVAL;
+            }
+            return 0;
+        }
+
         int standPat = evaluatePosition();
         if (standPat >= beta) {
             return beta;
@@ -250,17 +257,7 @@ public class AI { //extends Thread {
             alpha = standPat;
         }
 
-        Main.Board.MoveGenerator.GenerateMoves();
-
-        int numOfMoves = Main.Board.MoveGenerator.CurrentMoves.size();
-        if (numOfMoves == 0) {
-            if (Main.Board.MoveGenerator.inCheck) {
-                return LOWEST_EVAL;
-            }
-            return 0;
-        }
-
-        Pair<int[], int[]> movesAndValues = orderMoves(Main.Board.MoveGenerator.CurrentMoves, numOfMoves);
+        Pair<int[], int[]> movesAndValues = orderMoves(board.MoveGenerator.CurrentMoves, numOfMoves);
         int[] moves = movesAndValues.getKey();
         int[] values = movesAndValues.getValue();
 
@@ -274,10 +271,10 @@ public class AI { //extends Thread {
 
             move = moves[i];
 
-            Main.Board.MakeMove(move);
+            board.MakeMove(move);
             numOfMovesEvaluated++;
             score = -quiescence(-beta, -alpha, minValue);
-            Main.Board.UnmakeMove(move);
+            board.UnmakeMove(move);
 
             if (score >= beta) {
                 return beta;
@@ -304,11 +301,11 @@ public class AI { //extends Thread {
             return quiescence(alpha, beta, 900);
         }
 
-        Main.Board.MoveGenerator.GenerateMoves();
+        board.MoveGenerator.GenerateMoves();
 
-        int numOfMoves = Main.Board.MoveGenerator.CurrentMoves.size();
+        int numOfMoves = board.MoveGenerator.CurrentMoves.size();
         if (numOfMoves == 0) {
-            if (Main.Board.MoveGenerator.inCheck) {
+            if (board.MoveGenerator.inCheck) {
                 return LOWEST_EVAL + plyFromRoot;
             }
             return 0;
@@ -317,16 +314,15 @@ public class AI { //extends Thread {
         int move;
         int score;
 
-        Pair<int[], int[]> movesAndValues = orderMoves(Main.Board.MoveGenerator.CurrentMoves, numOfMoves);
+        Pair<int[], int[]> movesAndValues = orderMoves(board.MoveGenerator.CurrentMoves, numOfMoves);
         int[] moves = movesAndValues.getKey();
-        //4
         for (int i = 0; i < numOfMoves; i++) {
             move = moves[i];
 
-            Main.Board.MakeMove(move);
+            board.MakeMove(move);
             numOfMovesEvaluated++;
             score = -alphaBeta(-beta, -alpha,depth - 1, plyFromRoot + 1);
-            Main.Board.UnmakeMove(move);
+            board.UnmakeMove(move);
 
             if (score >= beta) {
                 return beta;
@@ -339,66 +335,94 @@ public class AI { //extends Thread {
         return alpha;
     }
 
-    public int getBestMove() {
-        int highestScore = Integer.MIN_VALUE;
+    public int getBestMove(Board searchBoard) {
+        board = searchBoard;
         int bestMove = -1;
+        int alpha = LOWEST_EVAL;
         int score;
 
-        ArrayList<Integer> listMoves = Main.Board.MoveGenerator.CurrentMoves;
+        ArrayList<Integer> listMoves = board.MoveGenerator.GenerateMoves();
 
         int s = listMoves.size();
+        if (s == 0) {
+            return -1;
+        }
+
         Pair<int[], int[]> movesAndValues = orderMoves(listMoves, s);
         int[] moves = movesAndValues.getKey();
         int move;
 
         for (int i = 0; i < s; i++) {
             move = moves[i];
-            Main.Board.MakeMove(move);
+            board.MakeMove(move);
             numOfMovesEvaluated++;
-            score = -alphaBeta(LOWEST_EVAL, HIGHEST_EVAL, 4, 0);
-            Main.Board.UnmakeMove(move);
+            score = -alphaBeta(-HIGHEST_EVAL, -alpha, SEARCH_DEPTH, 1);
+            board.UnmakeMove(move);
 
-            if (score > highestScore) {
-                highestScore = score;
+            if (bestMove == -1 || score > alpha) {
+                alpha = score;
                 bestMove = move;
             }
         }
 
-        Evaluation = highestScore;
+        Evaluation = alpha;
         return bestMove;
     }
 
+    /**
+     * Starts searching for the AI's move on a background thread, so the UI stays responsive.
+     * The search runs on a private copy of the board; the chosen move is applied to Main.Board on the JavaFX thread.
+     */
     public void run() {
-        if (Main.Board.ColorToMove == AIColor) {
-            /*try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }*/
-            InSearch = true;
+        if (InSearch || Main.Board.ColorToMove != AIColor || Main.currentMoves.isEmpty()) {
+            return;
+        }
 
+        InSearch = true;
+        Board searchBoard = new Board();
+        searchBoard.LoadPosition(Main.Board.GenerateLoadedPosition());
+
+        Thread searchThread = new Thread(() -> search(searchBoard), "AI search");
+        searchThread.setDaemon(true);
+        searchThread.start();
+    }
+
+    private void search(Board searchBoard) {
+        int move = -1;
+
+        try {
             long t = System.nanoTime();
 
             numOfMovesEvaluated = 0;
 
-            int move = getBestMove();
+            move = getBestMove(searchBoard);
 
-            t = System.nanoTime() - t;
-            System.out.println(
-                    "SEARCH DONE" +
-                    "\nBest move: " + Piece.Name(Main.Board.Square[Move.GetCurrentSquare(move)]) + " " + Move.GetName(move) +
-                    "\nEvaluation: " + Evaluation +
-                    "\nTime Taken: " + (double) (t) / 1000000 + " milliseconds" +
-                    "\nEvaluted: " + numOfMovesEvaluated + " positions" +
-                    "\nSpeed: " + (numOfMovesEvaluated * 1000000) / t + " positions per millisecond" +
-                    "\n~~~~~~~~~~~~~~~~~~~~~"
-            );
-            Main.Board.MakeMove(move);
-            Main.moveHistory.push(move);
-            Main.mostRecentMove = move;
-            Main.currentMoves = Main.Board.MoveGenerator.GenerateMoves();
+            t = Math.max(1, System.nanoTime() - t);
+            if (move != -1) {
+                System.out.println(
+                        "SEARCH DONE" +
+                        "\nBest move: " + Piece.Name(board.Square[Move.GetCurrentSquare(move)]) + " " + Move.GetName(move) +
+                        "\nEvaluation: " + Evaluation +
+                        "\nTime Taken: " + (double) (t) / 1000000 + " milliseconds" +
+                        "\nEvaluted: " + numOfMovesEvaluated + " positions" +
+                        "\nSpeed: " + (numOfMovesEvaluated * 1000000) / t + " positions per millisecond" +
+                        "\n~~~~~~~~~~~~~~~~~~~~~"
+                );
+            }
+        } finally {
+            int bestMove = move;
 
-            InSearch = false;
+            Platform.runLater(() -> {
+                if (bestMove != -1) {
+                    Main.Board.MakeMove(bestMove);
+                    Main.moveHistory.push(bestMove);
+                    Main.mostRecentMove = bestMove;
+                    Main.currentMoves = Main.Board.MoveGenerator.GenerateMoves();
+                    Main.reportGameOver();
+                }
+
+                InSearch = false;
+            });
         }
     }
 }
